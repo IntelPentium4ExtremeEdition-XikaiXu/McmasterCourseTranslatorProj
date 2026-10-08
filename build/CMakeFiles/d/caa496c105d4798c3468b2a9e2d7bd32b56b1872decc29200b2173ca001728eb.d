@@ -1,0 +1,2 @@
+third_party/whisper.cpp/ggml/src/ggml-vulkan/wkv6.comp.cpp: \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/wkv6.comp

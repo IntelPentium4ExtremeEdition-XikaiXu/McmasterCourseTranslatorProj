@@ -1,0 +1,1255 @@
+A1932 CLASSROOM LIVE TRANSLATOR
+Compact C++20 Architecture and Per-File Token Roadmap
+Target: MacBook Air A1932, Core m3-8210Y, UHD 617, Ubuntu 24.04
+Primary objective: live English classroom speech recognition and Chinese translation while preserving CPU responsiveness for OneNote.
+
+Document version: 0.1
+Architecture style: small modular monolith, bounded queues, parallel pipeline
+Implementation language: C++20
+
+======================================================================
+0. INTERPRETATION OF "TOKEN ROADMAP"
+======================================================================
+
+In this document, "token roadmap" means the recommended AI coding budget and
+prompting order for each source file. It is not the number of language-model
+tokens processed by Whisper.
+
+The budget is intentionally small. Each AI task should generate one narrow,
+reviewable file or one tightly coupled header/source pair. Never ask an AI to
+generate the entire repository in one prompt.
+
+Recommended total initial AI budget:
+
+  Skeleton and interfaces:          8,000 to 11,000 tokens
+  Audio, VAD, and buffering:       10,000 to 14,000 tokens
+  Whisper/Vulkan integration:       8,000 to 12,000 tokens
+  Translation and output:           8,000 to 12,000 tokens
+  Application wiring and tests:     9,000 to 13,000 tokens
+  Review, fixes, and optimization:  10,000 to 16,000 tokens
+
+  Total expected range:             53,000 to 78,000 tokens
+
+This can be reduced by implementing the MVP without local Chinese translation.
+An English-caption-only MVP needs approximately 35,000 to 50,000 tokens.
+
+======================================================================
+1. SYSTEM GOALS
+======================================================================
+
+Hard requirements:
+
+1. Capture the built-in microphone through PipeWire.
+2. Convert captured audio to mono, 16 kHz, signed 32-bit float PCM.
+3. Detect speech and avoid running inference during silence.
+4. Run whisper.cpp with its GGML Vulkan backend on UHD 617.
+5. Keep CPU use bounded so OneNote remains responsive.
+6. Emit timestamped English text and optional Chinese translation.
+7. Write human-readable lines to stdout and an optional named pipe.
+8. Save a transcript for later summarization.
+9. Recover cleanly from microphone disconnects and output-reader disconnects.
+10. Operate as one executable without Python, Electron, Qt, or a database.
+
+Non-goals for version 1:
+
+1. Cross-platform support.
+2. Multiple simultaneous microphones.
+3. A graphical interface.
+4. Speaker diarization.
+5. Word-level karaoke highlighting.
+6. Network accounts or cloud synchronization.
+7. A plugin system.
+8. Runtime model conversion.
+9. Perfect simultaneous interpretation.
+10. Supporting arbitrary Linux distributions.
+
+Central design rule:
+
+  The audio callback must never block, allocate memory, call Whisper, translate,
+  write a file, print to a terminal, or wait on a mutex.
+
+======================================================================
+2. TOP-LEVEL PIPELINE
+======================================================================
+
+  PipeWire microphone
+          |
+          v
+  AudioCapture callback
+          |
+          v
+  Preallocated SPSC AudioRing
+          |
+          v
+  AudioWorker: channel conversion/resampling/DC cleanup
+          |
+          v
+  VAD segmenter with pre-roll and hangover
+          |
+          v
+  Bounded SpeechQueue
+          |
+          v
+  WhisperWorker using GGML Vulkan
+          |
+          v
+  Bounded TranscriptQueue
+          |                         \
+          v                          v
+  TranslationWorker             TranscriptWriter
+          |                          |
+          v                          v
+  Bounded OutputQueue           session.txt
+          |
+          v
+  OutputWorker
+      |       |       |
+      v       v       v
+   stdout   FIFO    optional ncurses view later
+
+Backpressure policy:
+
+1. AudioRing full: drop the oldest audio block and increment a counter.
+2. SpeechQueue full: reject the oldest unprocessed segment, never block capture.
+3. TranscriptQueue full: preserve English transcript on disk first; translation
+   may be skipped.
+4. FIFO has no reader: continue stdout and file output; retry FIFO later.
+5. UI/output slow: coalesce partial captions and preserve final captions.
+
+======================================================================
+3. THREAD MODEL
+======================================================================
+
+Thread A: PipeWire event loop / audio callback
+- Highest practical priority, but do not use dangerous real-time settings first.
+- Copies frames into AudioRing only.
+- Performs no heap allocation after startup.
+
+Thread B: Audio and VAD worker
+- Reads blocks from AudioRing.
+- Performs lightweight format normalization and VAD.
+- Builds speech segments with pre-roll and hangover.
+- Pushes completed segments into SpeechQueue.
+
+Thread C: Whisper worker
+- Owns the whisper_context.
+- Performs one inference at a time.
+- Uses the Vulkan-enabled GGML build.
+- Publishes partial/final English transcript events.
+
+Thread D: Translation worker
+- Optional and lower priority than Whisper.
+- Consumes finalized English sentences only.
+- May initially use an external CLI adapter or a compact translation library.
+- Must be possible to disable at compile time and runtime.
+
+Thread E: Output and transcript worker
+- Owns stdout, FIFO, and transcript file descriptors.
+- Formats timestamps and output records.
+- Never blocks another stage.
+
+Main thread
+- Parses configuration.
+- Creates all bounded queues and workers.
+- Handles SIGINT/SIGTERM through a safe stop flag.
+- Starts and joins workers in deterministic order.
+
+Recommended Linux scheduling policy for version 1:
+
+- Audio callback/event loop: normal scheduling, nice -2 only if needed.
+- Whisper worker: normal priority.
+- Translation worker: nice +5 or idle scheduling if it competes with OneNote.
+- Output worker: normal priority.
+
+Do not enable SCHED_FIFO until the program is proven stable. A bug in a real-time
+thread can freeze the desktop.
+
+======================================================================
+4. REPOSITORY LAYOUT
+======================================================================
+
+classroom-translator/
+  CMakeLists.txt
+  cmake/
+    Dependencies.cmake
+    CompilerOptions.cmake
+  config/
+    default.conf
+  include/classroom/
+    types.hpp
+    config.hpp
+    bounded_queue.hpp
+    audio_ring.hpp
+    audio_capture.hpp
+    audio_processor.hpp
+    vad_segmenter.hpp
+    whisper_engine.hpp
+    translator.hpp
+    output_sink.hpp
+    transcript_writer.hpp
+    metrics.hpp
+    application.hpp
+  src/
+    config.cpp
+    audio_capture.cpp
+    audio_processor.cpp
+    vad_segmenter.cpp
+    whisper_engine.cpp
+    translator.cpp
+    output_sink.cpp
+    transcript_writer.cpp
+    metrics.cpp
+    application.cpp
+    main.cpp
+  tests/
+    test_audio_ring.cpp
+    test_vad_segmenter.cpp
+    test_output_format.cpp
+    test_shutdown.cpp
+  scripts/
+    build-native.sh
+    run-class.sh
+    benchmark.sh
+  third_party/
+    whisper.cpp/       (git submodule or pinned source tree)
+    webrtcvad/         (pinned small C/C++ implementation)
+  README.md
+
+Keep the first release below approximately:
+
+- 14 production headers/sources excluding vendored dependencies.
+- 2,500 lines of first-party C++.
+- 4 focused test executables or one test executable with four groups.
+- One runtime configuration file.
+
+======================================================================
+5. CORE DATA TYPES AND OWNERSHIP
+======================================================================
+
+AudioBlock
+- Fixed-capacity array of float samples.
+- frame_count, channel_count, sample_rate, monotonic timestamp.
+- No owning heap pointer.
+
+SpeechSegment
+- std::vector<float> owned by the segment after leaving the real-time path.
+- start/end timestamps.
+- sequence number.
+- VAD confidence or speech-frame ratio.
+
+TranscriptEvent
+- sequence number.
+- start/end timestamps.
+- English UTF-8 text.
+- final/partial flag.
+- inference duration and real-time factor.
+
+TranslatedEvent
+- Original TranscriptEvent metadata.
+- English text.
+- Chinese UTF-8 text, possibly empty when translation is disabled or skipped.
+- translation status enum.
+
+MetricsSnapshot
+- dropped audio blocks.
+- queued speech segments.
+- last inference duration.
+- rolling real-time factor.
+- translation backlog.
+- total finalized utterances.
+
+Ownership rules:
+
+1. AudioCapture owns the PipeWire objects.
+2. Application owns all workers and shared queues.
+3. WhisperEngine exclusively owns whisper_context.
+4. Translator exclusively owns its translation backend.
+5. OutputSink exclusively owns FIFO/stdout state.
+6. TranscriptWriter exclusively owns the transcript file.
+7. No global mutable objects.
+8. std::stop_token controls cooperative shutdown.
+
+======================================================================
+6. PER-FILE TOKEN ROADMAP
+======================================================================
+
+Each item specifies purpose, dependencies, public API, invariants, approximate
+size, AI token budget, prompt sequence, and completion test.
+
+----------------------------------------------------------------------
+6.1 include/classroom/types.hpp
+----------------------------------------------------------------------
+
+Purpose:
+- Define the small shared value types and enums used between stages.
+
+Dependencies:
+- C++ standard library only.
+
+Public contents:
+- AudioBlock, SpeechSegment, TranscriptEvent, TranslatedEvent.
+- TranslationStatus and LogLevel enums.
+- Timestamp alias based on std::chrono::steady_clock.
+
+Invariants:
+- AudioBlock is fixed-capacity and safe to move/copy without allocation.
+- Text is UTF-8.
+- Sequence numbers are monotonically increasing.
+
+Approximate size:
+- 100 to 160 lines.
+
+AI budget:
+- 1,200 to 1,800 tokens.
+
+Prompt roadmap:
+1. 300 tokens: state types, sample format, maximum block size, and ownership.
+2. 700 to 1,000 tokens: generate the complete header.
+3. 200 to 500 tokens: review for accidental allocation or ambiguous units.
+
+Completion test:
+- Header compiles alone and every time/duration field includes a unit in its name.
+
+----------------------------------------------------------------------
+6.2 include/classroom/config.hpp + src/config.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Define and load all runtime options without a heavyweight dependency.
+
+Dependencies:
+- Standard library only.
+
+Configuration fields:
+- PipeWire source name or default source.
+- input sample rate/channels.
+- VAD aggressiveness, frame size, pre-roll, hangover, maximum segment length.
+- Whisper model path, language, thread count, GPU enable flag.
+- translation enable flag and backend command/model path.
+- FIFO path, transcript path, partial-caption flag.
+
+Format:
+- Simple key=value text, comments beginning with #.
+- Command-line flags override the file.
+
+Approximate size:
+- Header 90 lines; source 220 lines.
+
+AI budget:
+- 2,000 to 3,000 tokens.
+
+Prompt roadmap:
+1. Define Config with explicit units in field names.
+2. Generate a strict key=value parser with line-numbered errors.
+3. Add validation and command-line overrides.
+4. Review defaults for the A1932 target.
+
+Completion test:
+- Invalid values fail before PipeWire/Whisper initialization.
+- Unknown keys produce a warning rather than silent behavior.
+
+----------------------------------------------------------------------
+6.3 include/classroom/bounded_queue.hpp
+----------------------------------------------------------------------
+
+Purpose:
+- Provide one reusable bounded blocking queue outside the audio callback.
+
+Dependencies:
+- Standard library only.
+
+Public API:
+- try_push(T).
+- wait_pop(stop_token).
+- try_pop().
+- close().
+- size() and capacity().
+
+Invariants:
+- Capacity is fixed after construction.
+- Shutdown wakes all waiters.
+- Policy for full queue is explicit at each caller.
+
+Approximate size:
+- 120 to 180 lines, header-only.
+
+AI budget:
+- 1,500 to 2,200 tokens.
+
+Prompt roadmap:
+1. Generate the API and invariants only.
+2. Implement with mutex plus condition_variable_any and stop_token.
+3. Add move-only type support.
+4. Audit close/shutdown races.
+
+Completion test:
+- ThreadSanitizer test passes for producers, consumer, close, and stop requests.
+
+----------------------------------------------------------------------
+6.4 include/classroom/audio_ring.hpp
+----------------------------------------------------------------------
+
+Purpose:
+- SPSC ring buffer between the PipeWire callback and AudioWorker.
+
+Dependencies:
+- types.hpp and atomics only.
+
+Public API:
+- bool try_push(const AudioBlock&).
+- bool try_pop(AudioBlock&).
+- drop counter.
+- compile-time or construction-time fixed capacity.
+
+Invariants:
+- Exactly one producer and one consumer.
+- No locking and no heap allocation in push/pop.
+- Correct acquire/release memory ordering.
+- Cache-line separation for producer and consumer indexes.
+
+Approximate size:
+- 130 to 200 lines, header-only.
+
+AI budget:
+- 2,000 to 3,000 tokens.
+
+Prompt roadmap:
+1. Ask only for the memory model and SPSC invariants.
+2. Generate implementation with power-of-two capacity.
+3. Ask for an adversarial memory-ordering review.
+4. Generate test separately, never in the same prompt.
+
+Completion test:
+- Millions of ordered blocks pass under ThreadSanitizer without allocation.
+
+----------------------------------------------------------------------
+6.5 include/classroom/audio_capture.hpp + src/audio_capture.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Capture microphone audio through libpipewire-0.3 and feed AudioRing.
+
+Dependencies:
+- PipeWire, types.hpp, audio_ring.hpp.
+
+Public API:
+- AudioCapture(Config, AudioRing&, Metrics&).
+- start().
+- request_stop().
+- join().
+
+Implementation boundaries:
+- Negotiate float32 when possible.
+- Accept a narrow set of fallback formats only if necessary.
+- Copy callback frames into fixed AudioBlocks.
+- Never perform resampling or VAD in the callback.
+- Report device format once at startup.
+
+Approximate size:
+- Header 80 lines; source 300 to 420 lines.
+
+AI budget:
+- 3,500 to 5,000 tokens.
+
+Prompt roadmap:
+1. Provide the exact PipeWire version and desired negotiated format.
+2. Ask for class skeleton and callback lifetime plan only.
+3. Ask for initialization and stream negotiation.
+4. Ask for process callback implementation.
+5. Ask for shutdown/error handling review.
+
+Completion test:
+- Runs for 30 minutes without growing memory.
+- Microphone unplug does not deadlock shutdown.
+- Callback contains no logging or allocation.
+
+----------------------------------------------------------------------
+6.6 include/classroom/audio_processor.hpp + src/audio_processor.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Normalize samples before VAD and Whisper.
+
+Dependencies:
+- types.hpp only; optionally a tiny resampler library if PipeWire cannot provide
+  16 kHz directly.
+
+Operations:
+- Stereo to mono averaging.
+- Sample-rate conversion to 16 kHz.
+- NaN/Inf sanitization.
+- Optional gentle DC blocker.
+- Peak measurement, not automatic gain control in version 1.
+
+Design choice:
+- First request 16 kHz mono from PipeWire. Keep the resampler path as a fallback.
+- Avoid elaborate denoising because it adds CPU cost and latency.
+
+Approximate size:
+- Header 70 lines; source 180 to 260 lines.
+
+AI budget:
+- 2,000 to 3,000 tokens.
+
+Prompt roadmap:
+1. Define exact input/output contracts.
+2. Generate conversion without SIMD first.
+3. Add a simple benchmark.
+4. Add AVX2 only if profiling shows this file matters.
+
+Completion test:
+- A generated sine wave retains expected frequency and amplitude.
+- Output always has 16 kHz mono float samples.
+
+----------------------------------------------------------------------
+6.7 include/classroom/vad_segmenter.hpp + src/vad_segmenter.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Convert normalized audio frames into bounded speech segments.
+
+Dependencies:
+- WebRTC VAD, types.hpp, bounded_queue.hpp.
+
+Algorithm:
+- Convert float frames to int16 only at the WebRTC VAD boundary.
+- Use supported 10/20/30 ms frames; start with 20 ms.
+- Maintain approximately 300 ms pre-roll.
+- Start speech after a small number of positive frames.
+- End speech after approximately 500 to 800 ms hangover silence.
+- Force-cut segments around 12 to 18 seconds.
+- Add small overlap when force-cutting to avoid lost words.
+
+Approximate size:
+- Header 100 lines; source 280 to 380 lines.
+
+AI budget:
+- 3,500 to 5,000 tokens.
+
+Prompt roadmap:
+1. Ask for the segment state machine in prose/pseudocode.
+2. Review edge cases: short cough, long lecture sentence, silence, force cut.
+3. Generate the header and state enum.
+4. Generate source from the approved state machine.
+5. Generate deterministic tests with synthetic VAD decisions.
+
+Completion test:
+- No segment is shorter than configured minimum unless flushing at shutdown.
+- No segment exceeds maximum plus overlap tolerance.
+- Pre-roll is included exactly once.
+
+----------------------------------------------------------------------
+6.8 include/classroom/whisper_engine.hpp + src/whisper_engine.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Own whisper.cpp state and turn SpeechSegments into TranscriptEvents.
+
+Dependencies:
+- whisper.cpp public C API, types.hpp, queues, metrics.
+
+Public API:
+- constructor from validated Config.
+- run(stop_token, SpeechQueue&, TranscriptQueue&).
+- backend_summary() for startup diagnostics.
+
+Runtime settings for first benchmark:
+- Model: tiny.en, then quantized tiny.en if supported by the selected build.
+- Language: English.
+- Translation inside Whisper: disabled.
+- Token timestamps: disabled initially.
+- Print callbacks: disabled.
+- CPU threads: 1 first, then benchmark 2.
+- GPU/Vulkan: enabled.
+- Process only VAD-completed segments.
+
+Important:
+- Confirm from program output that Vulkan backend/device is actually selected.
+- Do not assume Vulkan use merely because the program was compiled with it.
+- Keep whisper_context confined to one thread.
+
+Approximate size:
+- Header 90 lines; source 280 to 400 lines.
+
+AI budget:
+- 3,500 to 5,000 tokens.
+
+Prompt roadmap:
+1. Paste the exact installed whisper.h API declarations into the AI prompt.
+2. Ask for RAII ownership and error model only.
+3. Ask for inference parameter construction.
+4. Ask for segment extraction and UTF-8 cleanup.
+5. Ask for API-version and lifetime audit.
+
+Completion test:
+- Known WAV sample produces text.
+- Repeated 1,000-segment test has stable memory use.
+- Startup log names the Vulkan device.
+- Worker exits promptly after stop between inferences.
+
+----------------------------------------------------------------------
+6.9 include/classroom/translator.hpp + src/translator.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Translate finalized English captions into Simplified Chinese without delaying
+  recognition.
+
+Dependencies:
+- Keep behind an ITranslator interface.
+- Version 1 may use a subprocess adapter with pipes to a persistent translation
+  engine, but spawning once per sentence is forbidden.
+
+Interfaces:
+- ITranslator::translate(string_view) -> TranslationResult.
+- NullTranslator returns English only.
+- ProcessTranslator talks to one persistent helper process.
+
+Priority rule:
+- Translation is optional and expendable under load.
+- If backlog exceeds the configured limit, skip old translations but preserve
+  English transcripts.
+
+Text policy:
+- Preserve important English technical terms in parentheses when useful.
+- Translate finalized phrases only, not unstable partial text.
+
+Approximate size:
+- Header 120 lines; source 260 to 400 lines.
+
+AI budget:
+- 3,000 to 4,500 tokens.
+
+Prompt roadmap:
+1. Define ITranslator, NullTranslator, and TranslationResult.
+2. Implement NullTranslator first.
+3. Specify the persistent helper protocol as one JSON-free line protocol.
+4. Implement ProcessTranslator with poll(), timeout, and child cleanup.
+5. Audit shell-injection risks: use exec arguments, never system().
+
+Completion test:
+- Disabling translation removes all helper/model overhead.
+- Hung helper times out without blocking Whisper.
+- UTF-8 English and Chinese survive round trips.
+
+----------------------------------------------------------------------
+6.10 include/classroom/output_sink.hpp + src/output_sink.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Emit captions to stdout and a named FIFO reliably.
+
+Dependencies:
+- types.hpp, POSIX file APIs.
+
+Output record example:
+
+  [00:12:31.240 -> 00:12:36.820] EN: The derivative is evaluated here.
+  [00:12:31.240 -> 00:12:36.820] ZH: 导数在这里求值。
+
+Behavior:
+- stdout is line buffered.
+- FIFO opens nonblocking.
+- ENXIO/EPIPE means no reader; retry later.
+- SIGPIPE is suppressed/handled.
+- Partial captions may overwrite one terminal line but never enter the FIFO by
+  default.
+
+Approximate size:
+- Header 80 lines; source 220 to 300 lines.
+
+AI budget:
+- 2,000 to 3,000 tokens.
+
+Prompt roadmap:
+1. Define final and partial output behavior.
+2. Generate timestamp formatting separately.
+3. Add nonblocking FIFO state machine.
+4. Review EPIPE, ENXIO, EINTR, and partial writes.
+
+Completion test:
+- Program runs when FIFO has no reader.
+- Reader disconnect/reconnect is handled automatically.
+
+----------------------------------------------------------------------
+6.11 include/classroom/transcript_writer.hpp + src/transcript_writer.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Persist an append-only classroom transcript.
+
+Dependencies:
+- types.hpp, standard file streams or POSIX writes.
+
+Format:
+- Plain UTF-8 text, one finalized event block at a time.
+- Session header includes model, device, configuration, and start time.
+- Flush every few finalized events, not every partial caption.
+
+Approximate size:
+- Header 60 lines; source 130 to 190 lines.
+
+AI budget:
+- 1,200 to 2,000 tokens.
+
+Prompt roadmap:
+1. Define stable text format.
+2. Generate RAII file writer.
+3. Add I/O error degradation: warn and continue live captions.
+
+Completion test:
+- Abrupt SIGINT loses at most the last configured flush interval.
+
+----------------------------------------------------------------------
+6.12 include/classroom/metrics.hpp + src/metrics.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Provide lightweight counters for tuning, not full telemetry.
+
+Dependencies:
+- Atomics and chrono only.
+
+Metrics:
+- audio_blocks_received/dropped.
+- segments_created/dropped.
+- inference milliseconds.
+- audio duration milliseconds.
+- real-time factor = inference time / audio duration.
+- translation queue depth/skips.
+
+Output:
+- Print one compact status line every 10 seconds.
+
+Approximate size:
+- Header 80 lines; source 100 to 160 lines.
+
+AI budget:
+- 1,000 to 1,800 tokens.
+
+Prompt roadmap:
+1. Define counters and update ownership.
+2. Generate snapshot and formatting.
+3. Audit atomics; avoid false precision.
+
+Completion test:
+- Metrics can be disabled at compile time or have negligible overhead.
+
+----------------------------------------------------------------------
+6.13 include/classroom/application.hpp + src/application.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Wire components, queues, lifecycle, and shutdown together.
+
+Dependencies:
+- Every subsystem interface, but no low-level PipeWire or Whisper logic.
+
+Startup order:
+1. Parse/validate config.
+2. Initialize metrics and bounded queues.
+3. Initialize Whisper and translation backend before microphone capture.
+4. Initialize output and transcript.
+5. Start output, translation, Whisper, VAD/audio workers.
+6. Start capture last.
+
+Shutdown order:
+1. Stop capture first.
+2. Flush audio/VAD into a final segment.
+3. Close SpeechQueue.
+4. Let Whisper finish or obey configured grace period.
+5. Close TranscriptQueue and translation queue.
+6. Flush outputs/transcript.
+7. Join all jthreads.
+
+Approximate size:
+- Header 90 lines; source 280 to 380 lines.
+
+AI budget:
+- 3,000 to 4,500 tokens.
+
+Prompt roadmap:
+1. Give the AI only interfaces and required startup/shutdown order.
+2. Generate ownership fields and constructor.
+3. Generate run() and request_stop().
+4. Conduct a shutdown/deadlock review in a separate prompt.
+
+Completion test:
+- Ctrl+C exits cleanly at every startup stage.
+- Failure to initialize one component tears down all earlier components.
+
+----------------------------------------------------------------------
+6.14 src/main.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Minimal entry point.
+
+Responsibilities:
+- Load config and CLI overrides.
+- Install safe signal notification.
+- Construct Application.
+- Return meaningful exit codes.
+
+Forbidden:
+- No audio, Whisper, queue, translation, or output implementation.
+
+Approximate size:
+- 70 to 110 lines.
+
+AI budget:
+- 700 to 1,200 tokens.
+
+Prompt roadmap:
+1. Generate only after Application API is stable.
+2. Review signal handling for async-signal safety.
+
+Completion test:
+- main.cpp remains understandable in one screen.
+
+----------------------------------------------------------------------
+6.15 CMakeLists.txt + cmake/*.cmake
+----------------------------------------------------------------------
+
+Purpose:
+- Produce one optimized native binary and tests.
+
+Dependencies:
+- CMake, pkg-config, PipeWire, Threads, whisper.cpp, WebRTC VAD.
+
+Build options:
+- CLASSROOM_ENABLE_TRANSLATION=ON/OFF.
+- CLASSROOM_ENABLE_TESTS=ON/OFF.
+- CLASSROOM_NATIVE_OPT=ON/OFF.
+- CLASSROOM_ENABLE_SANITIZERS=ON/OFF.
+
+Release flags for this one known machine:
+- -O3
+- -march=native
+- -mtune=native
+- -flto
+- -DNDEBUG
+
+Do not manually force -mavx2/-mfma if -march=native already supplies them.
+Debug/test flags:
+- -O1 -g3 -fno-omit-frame-pointer.
+- ASan/UBSan build.
+- Separate TSan build where compatible.
+
+Whisper build requirement:
+- Enable GGML Vulkan in the pinned whisper.cpp subproject.
+
+Approximate size:
+- 180 to 280 lines total.
+
+AI budget:
+- 2,000 to 3,000 tokens.
+
+Prompt roadmap:
+1. Pin exact directory layout and dependency method.
+2. Generate normal debug/release build first.
+3. Add options and sanitizer targets.
+4. Review actual compiler and link commands with verbose build output.
+
+Completion test:
+- Clean configure/build succeeds from an empty build directory.
+- Runtime startup confirms Vulkan backend.
+
+----------------------------------------------------------------------
+6.16 tests/test_audio_ring.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Validate ordering, wraparound, full/empty behavior, and concurrent SPSC use.
+
+Approximate size:
+- 180 to 260 lines.
+
+AI budget:
+- 1,500 to 2,500 tokens.
+
+Completion test:
+- Passes repeatedly under TSan and optimized release builds.
+
+----------------------------------------------------------------------
+6.17 tests/test_vad_segmenter.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Validate the segmentation state machine without requiring real audio.
+
+Test scenarios:
+- all silence.
+- single short utterance.
+- speech with internal pause.
+- long utterance force-cut.
+- pre-roll correctness.
+- shutdown flush.
+
+Approximate size:
+- 220 to 320 lines.
+
+AI budget:
+- 2,000 to 3,000 tokens.
+
+Completion test:
+- All expected segment boundaries are deterministic.
+
+----------------------------------------------------------------------
+6.18 tests/test_output_format.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Validate timestamps, UTF-8 text, final/partial behavior, and FIFO reconnect.
+
+Approximate size:
+- 140 to 220 lines.
+
+AI budget:
+- 1,200 to 2,000 tokens.
+
+Completion test:
+- Chinese and English output bytes exactly match golden strings.
+
+----------------------------------------------------------------------
+6.19 tests/test_shutdown.cpp
+----------------------------------------------------------------------
+
+Purpose:
+- Exercise staged startup failures and shutdown while each queue is empty/full.
+
+Approximate size:
+- 180 to 280 lines.
+
+AI budget:
+- 1,800 to 2,800 tokens.
+
+Completion test:
+- No deadlock across hundreds of randomized start/stop cycles.
+
+======================================================================
+7. PARALLEL IMPLEMENTATION WAVES
+======================================================================
+
+Wave 0: pin dependencies and benchmark existing whisper.cpp
+Can run immediately:
+- Build whisper.cpp with Vulkan.
+- Confirm UHD 617 device selection.
+- Benchmark tiny.en on several 5, 10, and 15 second WAV files.
+- Record real-time factor, CPU percentage, GPU usage, and package power.
+
+Exit criterion:
+- Vulkan inference works and a suitable model/segment duration is known.
+
+Wave 1: independent foundations
+Can be developed in parallel:
+- types.hpp
+- config.hpp/config.cpp
+- bounded_queue.hpp
+- audio_ring.hpp
+- metrics.hpp/metrics.cpp
+- initial CMake files
+
+Exit criterion:
+- Foundation tests compile and pass.
+
+Wave 2: independent subsystem branches
+Can be developed mostly in parallel:
+- Branch A: audio_capture.cpp
+- Branch B: audio_processor.cpp
+- Branch C: vad_segmenter.cpp and tests
+- Branch D: whisper_engine.cpp using prerecorded segments
+- Branch E: output_sink.cpp and transcript_writer.cpp
+- Branch F: translator interface and NullTranslator
+
+Exit criterion:
+- Each branch has a tiny standalone harness or unit test.
+
+Wave 3: pipeline integration
+Sequential integration order:
+1. AudioCapture -> AudioRing -> test level meter.
+2. Add AudioProcessor.
+3. Add VAD and print segment durations.
+4. Add Whisper and print English finals.
+5. Add transcript persistence and FIFO.
+6. Add optional translation last.
+
+Exit criterion:
+- 60-minute classroom simulation has no leak, deadlock, or unbounded queue.
+
+Wave 4: low-power tuning
+- Tune VAD start/hangover and maximum segment length.
+- Compare one versus two CPU helper threads.
+- Compare model variants.
+- Set queue capacities using measured worst cases.
+- Lower translation priority.
+- Remove logging from hot paths.
+
+Exit criterion:
+- OneNote typing remains responsive under representative load.
+
+======================================================================
+8. MVP MILESTONES
+======================================================================
+
+MVP-0: Backend proof
+- Existing whisper-cli recognizes prerecorded lecture audio on Vulkan.
+- No custom program yet.
+
+MVP-1: Microphone to English terminal caption
+- PipeWire capture.
+- Fixed-size AudioRing.
+- VAD segmentation.
+- whisper.cpp Vulkan inference.
+- stdout output.
+
+MVP-2: Reliable classroom utility
+- Named FIFO.
+- Transcript file.
+- Clean shutdown.
+- Metrics and drop counters.
+- Config file.
+
+MVP-3: Chinese translation
+- Translation worker and bounded queue.
+- English always preserved.
+- Chinese may be skipped under overload.
+
+MVP-4: Convenience
+- Small launcher script.
+- Optional terminal overlay/ncurses view.
+- Automatic session filenames.
+
+Do not implement MVP-3 before MVP-2 is reliable.
+
+======================================================================
+9. INITIAL CONFIGURATION FOR THE A1932
+======================================================================
+
+Suggested starting values, to be benchmarked rather than treated as truth:
+
+  audio.sample_rate_hz=16000
+  audio.channels=1
+  audio.block_ms=20
+
+  vad.mode=2
+  vad.frame_ms=20
+  vad.preroll_ms=300
+  vad.start_trigger_ms=120
+  vad.hangover_ms=650
+  vad.min_segment_ms=500
+  vad.max_segment_ms=14000
+  vad.force_cut_overlap_ms=300
+
+  whisper.model=models/ggml-tiny.en.bin
+  whisper.language=en
+  whisper.cpu_threads=1
+  whisper.use_gpu=true
+  whisper.partial_results=false
+
+  translation.enabled=false
+  translation.max_queue=4
+  translation.timeout_ms=3000
+
+  output.stdout=true
+  output.fifo=/tmp/classroom-translator.pipe
+  output.transcript_dir=./transcripts
+
+  queue.audio_blocks=256
+  queue.speech_segments=4
+  queue.transcripts=16
+  queue.output_events=32
+
+Rationale:
+- Start with one Whisper CPU helper thread so OneNote keeps a CPU thread.
+- Start without partial results and translation to establish a stable baseline.
+- Keep speech queue small so the system drops stale work rather than becoming
+  minutes behind the lecturer.
+
+======================================================================
+10. PERFORMANCE AND POWER TEST PLAN
+======================================================================
+
+Measure four builds/modes:
+
+A. CPU-only Whisper, one thread.
+B. CPU-only Whisper, two threads.
+C. Vulkan Whisper, one CPU helper thread.
+D. Vulkan Whisper, two CPU helper threads.
+
+For each mode record:
+- Mean and 95th percentile real-time factor.
+- End-of-speech to final-caption latency.
+- Whole-process CPU percentage.
+- GPU render/compute utilization from intel_gpu_top.
+- Package power and temperature.
+- Dropped audio/segments.
+- Subjective OneNote typing and scrolling responsiveness.
+
+Representative test:
+1. Play a 20-minute lecture through a nearby speaker at realistic volume.
+2. Type continuously in OneNote.
+3. Keep the same power profile and screen brightness.
+4. Repeat each mode at least twice.
+5. Prefer the lowest CPU mode that stays below real-time factor 1.0 with margin.
+
+Target thresholds:
+- Average real-time factor <= 0.75.
+- 95th percentile final-caption latency <= 4 seconds.
+- No unbounded backlog.
+- No noticeable OneNote input lag.
+- No thermal collapse after 20 minutes.
+
+======================================================================
+11. FAILURE HANDLING
+======================================================================
+
+Microphone unavailable:
+- Retry with bounded backoff and show one concise status message.
+
+Audio callback overrun:
+- Drop oldest block, increment counter, continue.
+
+VAD produces a very long segment:
+- Force-cut with overlap.
+
+Whisper slower than real time:
+- Drop stale unprocessed segment before dropping current speech.
+- Disable translation automatically if configured.
+- Emit an overload warning no more than once per interval.
+
+Vulkan initialization fails:
+- Either fail fast or use an explicit allow_cpu_fallback option.
+- Never silently switch to CPU and ruin OneNote responsiveness.
+
+Translation fails:
+- Emit English only and mark translation status.
+
+FIFO has no reader:
+- Continue stdout and transcript; retry nonblocking.
+
+Disk write fails:
+- Continue live captions and report the error once.
+
+Shutdown during inference:
+- Allow current short segment to finish within a grace period; then exit.
+
+======================================================================
+12. AI CODING RULES FOR A SMALL CODE BASE
+======================================================================
+
+Every AI prompt should include:
+
+1. Exact file path.
+2. Exact responsibility and forbidden responsibilities.
+3. Existing public interfaces pasted verbatim.
+4. Thread ownership and blocking policy.
+5. Allocation policy.
+6. Error-handling policy.
+7. Maximum approximate line count.
+8. Required tests.
+9. Request for complete compilable code, not pseudocode.
+
+Never ask an AI to:
+
+- Invent whisper.cpp API calls without providing the installed whisper.h.
+- Generate more than one complex subsystem at once.
+- Replace bounded queues with unlimited std::queue usage.
+- log from the PipeWire callback.
+- perform translation in the Whisper thread.
+- add a framework to solve a small local problem.
+- silently add cross-platform abstraction.
+- use detached threads.
+- use system() for helper execution.
+- catch all exceptions and ignore them.
+
+Recommended per-file AI loop:
+
+Step 1: Ask for interface/invariants only, 300 to 600 tokens.
+Step 2: Human checks ownership and dependency direction.
+Step 3: Ask for implementation, 1,000 to 3,000 tokens.
+Step 4: Compile immediately.
+Step 5: Ask AI to fix only the exact compiler errors, with the error text.
+Step 6: Ask for focused tests, 800 to 2,000 tokens.
+Step 7: Run sanitizers.
+Step 8: Ask for a concurrency/lifetime audit, 500 to 1,000 tokens.
+Step 9: Freeze the public interface before parallel branches depend on it.
+
+======================================================================
+13. DEPENDENCY DIRECTION
+======================================================================
+
+Allowed:
+
+  main -> application
+  application -> subsystem interfaces
+  audio_capture -> audio_ring, metrics, PipeWire
+  audio_processor -> types
+  vad_segmenter -> types, WebRTC VAD, speech queue
+  whisper_engine -> types, whisper.cpp, transcript queue
+  translator -> types, translation queue
+  output/transcript -> types
+
+Forbidden:
+
+  audio_capture -> Whisper
+  Whisper -> PipeWire
+  translator -> PipeWire
+  output -> Whisper internals
+  shared headers -> PipeWire/Vulkan implementation details
+  any subsystem -> Application
+
+This one-way dependency graph is what allows files to be generated and reviewed
+in parallel without constant merge conflicts.
+
+======================================================================
+14. FIRST TEN IMPLEMENTATION TASKS
+======================================================================
+
+1. Create repository and pin whisper.cpp/WebRTC VAD revisions.
+2. Build whisper.cpp with Vulkan and verify UHD 617 selection.
+3. Benchmark tiny.en on prerecorded lecture audio.
+4. Implement types.hpp, audio_ring.hpp, and their tests.
+5. Implement config and first CMake target.
+6. Implement PipeWire capture with a temporary level-meter consumer.
+7. Implement AudioProcessor and VAD state machine with synthetic tests.
+8. Implement WhisperEngine using prerecorded SpeechSegments.
+9. Connect microphone -> VAD -> Whisper -> stdout.
+10. Add clean shutdown, transcript file, FIFO, then translation.
+
+======================================================================
+15. DEFINITION OF DONE FOR VERSION 1
+======================================================================
+
+Version 1 is done when:
+
+- One command starts the program.
+- The program confirms the selected microphone, model, and UHD 617 Vulkan device.
+- English captions appear from live classroom speech.
+- Optional Chinese lines appear without blocking English recognition.
+- OneNote remains responsive during a 60-minute test.
+- The process does not grow memory continuously.
+- Ctrl+C exits cleanly.
+- A missing FIFO reader does not crash the program.
+- A timestamped transcript is saved.
+- Overload causes bounded, visible degradation rather than unlimited delay.
+- The first-party code remains small enough for one person and a modest AI to
+  understand file by file.
+
+======================================================================
+16. FINAL RECOMMENDATION
+======================================================================
+
+Build a modular monolith, not microservices and not one giant source file.
+Use five worker roles but only a few bounded queues. Keep the real-time audio
+callback extremely small. Give Vulkan Whisper exclusive ownership in one worker.
+Treat Chinese translation as optional lower-priority work. Preserve English and
+responsiveness before translation completeness.
+
+The best first deliverable is not the complete translator. It is this narrow,
+measurable chain:
+
+  PipeWire -> AudioRing -> VAD -> whisper.cpp Vulkan -> stdout
+
+Once that chain runs below real time without disturbing OneNote, add transcript
+persistence, FIFO output, and finally Chinese translation.

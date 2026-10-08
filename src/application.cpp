@@ -1,0 +1,4 @@
+#include "classroom/application.hpp"
+#include <chrono>
+#include <iostream>
+namespace classroom {Application::Application(Config c):c_(std::move(c)),whisper_(c_),out_(c_),vad_(c_.vad_threshold,c_.hangover_ms,c_.max_segment_ms,[this](SpeechSegment s){q_.push_drop_oldest(std::move(s));}),capture_([this](const float*x,size_t n){vad_.consume(x,n);}){}int Application::run(){worker_=std::jthread([this](std::stop_token st){while(auto s=q_.wait_pop(st)){try{out_.write(whisper_.transcribe(std::move(*s)));}catch(const std::exception&e){std::cerr<<e.what()<<"\n";}}});if(!capture_.start()){std::cerr<<"PipeWire capture failed\n";return 2;}while(running_)std::this_thread::sleep_for(std::chrono::milliseconds(100));capture_.stop();vad_.flush();q_.close();worker_.request_stop();return 0;}void Application::stop(){running_=false;}}

@@ -1,0 +1,7 @@
+/home/xikaixu/Development/McmasterCourseTranslatorProj/build/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles/vulkan-shaders-gen.dir
+/home/xikaixu/Development/McmasterCourseTranslatorProj/build/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles/edit_cache.dir
+/home/xikaixu/Development/McmasterCourseTranslatorProj/build/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles/rebuild_cache.dir
+/home/xikaixu/Development/McmasterCourseTranslatorProj/build/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles/list_install_components.dir
+/home/xikaixu/Development/McmasterCourseTranslatorProj/build/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles/install.dir
+/home/xikaixu/Development/McmasterCourseTranslatorProj/build/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles/install/local.dir
+/home/xikaixu/Development/McmasterCourseTranslatorProj/build/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles/install/strip.dir

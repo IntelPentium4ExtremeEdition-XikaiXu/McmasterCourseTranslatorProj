@@ -1,0 +1,3 @@
+third_party/whisper.cpp/ggml/src/ggml-vulkan/snake.comp.cpp: \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/snake.comp \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl

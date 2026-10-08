@@ -1,0 +1,6 @@
+third_party/whisper.cpp/ggml/src/ggml-vulkan/lightning_indexer.comp.cpp: \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/fa_types.glsl \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_dequant.glsl \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/ggml_type_ids.glsl \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/lightning_indexer.comp \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl

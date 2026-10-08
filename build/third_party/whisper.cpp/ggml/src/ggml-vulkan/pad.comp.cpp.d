@@ -1,0 +1,1 @@
+/home/xikaixu/Development/McmasterCourseTranslatorProj/build/third_party/whisper.cpp/ggml/src/ggml-vulkan/pad.comp.cpp: /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/pad.comp /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl

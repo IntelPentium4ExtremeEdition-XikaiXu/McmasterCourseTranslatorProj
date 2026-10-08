@@ -1,0 +1,2 @@
+third_party/whisper.cpp/ggml/src/ggml-vulkan/dsv4_hc_comb.comp.cpp: \
+  /home/xikaixu/Development/McmasterCourseTranslatorProj/third_party/whisper.cpp/ggml/src/ggml-vulkan/vulkan-shaders/dsv4_hc_comb.comp
